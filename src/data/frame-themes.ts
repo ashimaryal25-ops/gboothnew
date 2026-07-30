@@ -2515,6 +2515,113 @@ export const FRAME_THEMES: FrameTheme[] = [
     }
   },
   {
+    "key": "picnic",
+    "label": "Picnic",
+    "photoCount": 4,
+    "single": {
+      "src": "/frames/single/picnic4pic.png",
+      "w": 612,
+      "h": 1804,
+      "slots": [
+        {
+          "x": 30,
+          "y": 36,
+          "w": 552,
+          "h": 366
+        },
+        {
+          "x": 30,
+          "y": 422,
+          "w": 552,
+          "h": 366
+        },
+        {
+          "x": 30,
+          "y": 808,
+          "w": 552,
+          "h": 366
+        },
+        {
+          "x": 30,
+          "y": 1194,
+          "w": 552,
+          "h": 366
+        }
+      ],
+      "bleed": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+      }
+    },
+    "print": {
+      "src": "/frames/print/backend-picnic-4pic.png",
+      "w": 1200,
+      "h": 1800,
+      "slots": {
+        "left": [
+          {
+            "x": 48,
+            "y": 69,
+            "w": 522,
+            "h": 366
+          },
+          {
+            "x": 48,
+            "y": 455,
+            "w": 522,
+            "h": 366
+          },
+          {
+            "x": 48,
+            "y": 841,
+            "w": 522,
+            "h": 366
+          },
+          {
+            "x": 48,
+            "y": 1227,
+            "w": 522,
+            "h": 366
+          }
+        ],
+        "right": [
+          {
+            "x": 630,
+            "y": 69,
+            "w": 522,
+            "h": 366
+          },
+          {
+            "x": 630,
+            "y": 455,
+            "w": 522,
+            "h": 366
+          },
+          {
+            "x": 630,
+            "y": 841,
+            "w": 522,
+            "h": 366
+          },
+          {
+            "x": 630,
+            "y": 1227,
+            "w": 522,
+            "h": 366
+          }
+        ]
+      },
+      "bleed": {
+        "top": 20,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+      }
+    }
+  },
+  {
     "key": "polka",
     "label": "Polka Dot",
     "photoCount": 2,
@@ -2743,7 +2850,7 @@ export const FRAME_THEMES: FrameTheme[] = [
             "x": 56,
             "y": 1238,
             "w": 505,
-            "h": 343
+            "h": 336
           }
         ],
         "right": [
@@ -2769,7 +2876,78 @@ export const FRAME_THEMES: FrameTheme[] = [
             "x": 639,
             "y": 1238,
             "w": 505,
-            "h": 343
+            "h": 336
+          }
+        ]
+      },
+      "bleed": {
+        "top": 20,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+      }
+    }
+  },
+  {
+    "key": "soccer",
+    "label": "Soccer",
+    "photoCount": 2,
+    "single": {
+      "src": "/frames/single/soccer 2pic.png",
+      "w": 600,
+      "h": 1800,
+      "slots": [
+        {
+          "x": 35,
+          "y": 26,
+          "w": 530,
+          "h": 742
+        },
+        {
+          "x": 35,
+          "y": 803,
+          "w": 542,
+          "h": 740
+        }
+      ],
+      "bleed": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+      }
+    },
+    "print": {
+      "src": "/frames/print/backend-soccer-2pic.png",
+      "w": 1200,
+      "h": 1800,
+      "slots": {
+        "left": [
+          {
+            "x": 53,
+            "y": 46,
+            "w": 504,
+            "h": 743
+          },
+          {
+            "x": 53,
+            "y": 822,
+            "w": 504,
+            "h": 743
+          }
+        ],
+        "right": [
+          {
+            "x": 643,
+            "y": 46,
+            "w": 504,
+            "h": 743
+          },
+          {
+            "x": 643,
+            "y": 822,
+            "w": 504,
+            "h": 743
           }
         ]
       },
