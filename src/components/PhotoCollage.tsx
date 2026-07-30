@@ -11,6 +11,7 @@
  *   - 3s countdown capture + retake, mirrored viewfinder
  *   - strip canvas (360x960) with her exact per-slot spacing maths
  *   - her 6 filters, 5 preset frame colours + colour wheel, 8 emoji stickers
+ *     plus Gettysburg/ICL PNG stickers (public/stickers)
  *   - final screen: strip + print
  *
  * Deliberate differences from her standalone file, and why:
@@ -37,8 +38,11 @@ import {
 
 type CollageView = "layout" | "camera" | "decor" | "final";
 type FilterName = "none" | "traditional" | "sepia" | "soft" | "y2k" | "vivid";
-type Sticker = { id: number; emoji: string; x: number; y: number; size: number };
-type PaletteDrag = { emoji: string; x: number; y: number };
+// A sticker is either an emoji (drawn as text) or an image (`src` set, drawn
+// from a preloaded PNG). `size` is the glyph font-size for emoji and the
+// bounding-box longest side for images.
+type Sticker = { id: number; emoji: string; x: number; y: number; size: number; src?: string };
+type PaletteDrag = { emoji: string; x: number; y: number; src?: string };
 
 type PhotoCollageProps = {
   /** Return to the app's home (the 4-quadrant chooser). */
@@ -153,11 +157,24 @@ function paintFrameBleed(
 function drawStickers(
   ctx: CanvasRenderingContext2D,
   stickers: Sticker[],
+  images: Map<string, HTMLImageElement>,
   scale = 1,
   offsetX = 0,
 ) {
   ctx.save();
   stickers.forEach((s) => {
+    if (s.src) {
+      // Image sticker: fit inside a `size`x`size` box preserving aspect ratio,
+      // centred on (x, y). Skipped if the PNG hasn't finished preloading.
+      const img = images.get(s.src);
+      if (!img || !img.complete || !img.naturalWidth) return;
+      const box = s.size * scale;
+      const ar = img.naturalWidth / img.naturalHeight;
+      const w = ar >= 1 ? box : box * ar;
+      const h = ar >= 1 ? box / ar : box;
+      ctx.drawImage(img, offsetX + s.x * scale - w / 2, s.y * scale - h / 2, w, h);
+      return;
+    }
     ctx.font = `${s.size * scale}px Arial`;
     ctx.textBaseline = "middle";
     ctx.textAlign = "center";
@@ -191,6 +208,22 @@ const FILTERS: { key: FilterName; label: string }[] = [
 ];
 
 const STICKER_EMOJIS = ["❤️", "⭐", "✨", "🎀", "🕶️", "👑", "🐈", "🍒"];
+
+// Gettysburg / ICL PNG stickers (transparent). Dragged onto the strip like the
+// emoji, but drawn from preloaded images. Files live in public/stickers.
+const IMAGE_STICKERS: { src: string; label: string }[] = [
+  { src: "/stickers/gburg-primary-logo.png", label: "Gettysburg College logo" },
+  { src: "/stickers/gburg-g-logo.png", label: "Gettysburg G logo" },
+  { src: "/stickers/bullet-mascot.png", label: "Bullets mascot" },
+  { src: "/stickers/gburg-college.png", label: "Gettysburg College" },
+  { src: "/stickers/gburg-pennant.png", label: "Gettysburg pennant" },
+  { src: "/stickers/gburg-cookie.png", label: "Gettysburg cookie" },
+  { src: "/stickers/do-great-work-glasses.png", label: "Do great work glasses" },
+  { src: "/stickers/icl-logo-sticker.png", label: "ICL logo" },
+];
+// Image stickers drop bigger than emoji so logos stay legible.
+const IMAGE_STICKER_SIZE = 150;
+const EMOJI_STICKER_SIZE = 84;
 
 const LAYOUT_OPTIONS = [
   { slots: 2, label: "2 SHOTS", sub: "Classic duo" },
@@ -228,6 +261,7 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
   // custom frames; the two paths are independent all the way to the printer.
   const [frameKey, setFrameKey] = useState<string | null>(null);
   const [frameImg, setFrameImg] = useState<HTMLImageElement | null>(null);
+  const [framePage, setFramePage] = useState(0);
 
   const [countdown, setCountdown] = useState<number | null>(null);
   const [previews, setPreviews] = useState<string[]>([]);
@@ -242,6 +276,11 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
   const [paletteDrag, setPaletteDrag] = useState<PaletteDrag | null>(null);
   const [brandReady, setBrandReady] = useState(false);
   const [stripQrReady, setStripQrReady] = useState(false);
+  // Preloaded PNG stickers, keyed by src so drawStickers can look them up
+  // synchronously. `stickerImgsReady` bumps once they load so the preview
+  // re-renders any already-placed image stickers.
+  const stickerImgsRef = useRef<Map<string, HTMLImageElement>>(new Map());
+  const [stickerImgsReady, setStickerImgsReady] = useState(false);
 
   const lastRelayIdRef = useRef(0);
   const activePointersRef = useRef<Map<number, {x: number, y: number}>>(new Map());
@@ -291,6 +330,24 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
         qrImg.src = url;
       })
       .catch(() => {});
+  }, []);
+
+  // Preload the PNG stickers once so drawStickers can blit them synchronously.
+  useEffect(() => {
+    let remaining = IMAGE_STICKERS.length;
+    const done = () => {
+      remaining -= 1;
+      if (remaining <= 0) setStickerImgsReady(true);
+    };
+    IMAGE_STICKERS.forEach(({ src }) => {
+      const img = new Image();
+      img.onload = () => {
+        stickerImgsRef.current.set(src, img);
+        done();
+      };
+      img.onerror = done;
+      img.src = src;
+    });
   }, []);
 
   // --- Camera relay ---------------------------------------------------------
@@ -372,6 +429,8 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
     setStickers([]);
     setFilter("none");
     setBgColor(DEFAULT_STRIP_COLOR);
+    setFrameKey(null);
+    setFramePage(0);
     setView("camera");
   };
 
@@ -462,6 +521,11 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
   // against the current slot count and silently drops back to the plain strip
   // when the guest switches to a count this theme was not drawn for.
   const availableFrames = useMemo(() => framesForCount(slots), [slots]);
+  const framePageCount = Math.max(1, Math.ceil(availableFrames.length / 5));
+  const visibleFrames = useMemo(
+    () => availableFrames.slice(framePage * 5, framePage * 5 + 5),
+    [availableFrames, framePage],
+  );
   const activeFrame = useMemo(
     () => (frameKey ? findFrame(frameKey, slots) : undefined),
     [frameKey, slots],
@@ -521,7 +585,7 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
         );
       });
       ctx.drawImage(frameImg, 0, 0, STRIP_W, STRIP_H);
-      drawStickers(ctx, stickers);
+      drawStickers(ctx, stickers, stickerImgsRef.current);
       return;
     }
 
@@ -597,8 +661,12 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
       ctx.drawImage(stripQrImg, qrX, qrY, qrSize, qrSize);
     }
 
-    drawStickers(ctx, stickers);
-  }, [bgColor, filter, stickers, brandReady, stripQrReady, activeFrame, frameImg]);
+    drawStickers(ctx, stickers, stickerImgsRef.current);
+    // stickerImgsReady is intentional: it isn't read here (drawStickers reads the
+    // ref) but forces a repaint once the PNG stickers finish preloading, so any
+    // already-placed image sticker appears without waiting for the next interaction.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bgColor, filter, stickers, brandReady, stripQrReady, activeFrame, frameImg, stickerImgsReady]);
 
   useEffect(() => {
     if (view === "decor") renderStrip();
@@ -669,10 +737,11 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
 
   const startPaletteDrag = (
     emoji: string,
+    src: string | undefined,
     e: React.PointerEvent<HTMLButtonElement>,
   ) => {
     e.preventDefault();
-    const nextDrag = { emoji, x: e.clientX, y: e.clientY };
+    const nextDrag = { emoji, src, x: e.clientX, y: e.clientY };
     paletteDragRef.current = nextDrag;
     setPaletteDrag(nextDrag);
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -708,7 +777,7 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
 
     if (!droppedOnStrip) return;
 
-    const size = 84;
+    const size = activeDrag.src ? IMAGE_STICKER_SIZE : EMOJI_STICKER_SIZE;
     const x = ((e.clientX - box.left) / box.width) * STRIP_W;
     const y = ((e.clientY - box.top) / box.height) * STRIP_H;
     setStickers((previous) => [
@@ -716,6 +785,7 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
       {
         id: Date.now() + Math.random(),
         emoji: activeDrag.emoji,
+        src: activeDrag.src,
         x: Math.min(STRIP_W - size / 2, Math.max(size / 2, x)),
         y: Math.min(STRIP_H - size / 2, Math.max(size / 2, y)),
         size,
@@ -860,8 +930,8 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
       // Stickers sit on top of the art, once per strip half.
       const halfW = sheet.width / 2;
       const scale = halfW / STRIP_W;
-      drawStickers(ctx, stickers, scale, 0);
-      drawStickers(ctx, stickers, scale, halfW);
+      drawStickers(ctx, stickers, stickerImgsRef.current, scale, 0);
+      drawStickers(ctx, stickers, stickerImgsRef.current, scale, halfW);
 
       return sheet.toDataURL("image/png");
     },
@@ -926,10 +996,15 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
       {paletteDrag && (
         <div
           aria-hidden="true"
-          className="pointer-events-none fixed z-[100] grid h-16 w-16 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-lg border-2 border-white bg-[#043371]/90 text-[40px] shadow-xl"
+          className="pointer-events-none fixed z-[100] grid h-16 w-16 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-lg border-2 border-white bg-[#043371]/90 p-1 text-[40px] shadow-xl"
           style={{ left: paletteDrag.x, top: paletteDrag.y }}
         >
-          {paletteDrag.emoji}
+          {paletteDrag.src ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={paletteDrag.src} alt="" className="max-h-full max-w-full object-contain" />
+          ) : (
+            paletteDrag.emoji
+          )}
         </div>
       )}
 
@@ -1117,18 +1192,18 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
                 onPointerUp={onPointerUp}
                 onPointerCancel={onPointerUp}
                 onPointerOut={onPointerUp}
-                className="max-h-[80vh] max-w-full cursor-crosshair bg-white shadow-[0_12px_35px_rgba(0,0,0,0.3)]"
+                className="max-h-[76vh] max-w-full cursor-crosshair bg-white shadow-[0_12px_35px_rgba(0,0,0,0.3)]"
                 style={{ touchAction: "none" }}
               />
             </div>
 
             {/* Dashboard */}
-            <div className="flex w-[680px] flex-col gap-6">
+            <div className="flex w-[680px] flex-col gap-3">
               <h2 className="text-[34px] font-black uppercase tracking-[2px] text-white [text-shadow:0_4px_10px_rgba(0,0,0,0.25)]">
                 Customize Your Strip
               </h2>
 
-              <div className="grid grid-cols-2 gap-x-[45px] gap-y-[30px]">
+              <div className="grid grid-cols-2 gap-x-[45px] gap-y-[18px]">
                 {/* FRAME COLOR */}
                 <div className="flex flex-col items-start">
                   <h3 className={heading}>Frame Color</h3>
@@ -1193,24 +1268,41 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
                 </div>
 
                 {/* STICKERS */}
-                <div className="flex flex-col items-start">
+                <div className="col-span-2 flex flex-col items-start">
                   <h3 className={heading}>Stickers</h3>
-                  <p className="-mt-2 mb-3 text-[12px] font-bold text-white/85">
+                  <p className="-mt-2 mb-2 text-[12px] font-bold text-white/85">
                     Drag one onto the strip
                   </p>
-                  <div className="grid w-full grid-cols-4 gap-3">
+                  <div className="grid w-full grid-cols-8 gap-2">
                     {STICKER_EMOJIS.map((emoji) => (
                       <button
                         key={emoji}
                         type="button"
-                        onPointerDown={(event) => startPaletteDrag(emoji, event)}
+                        onPointerDown={(event) => startPaletteDrag(emoji, undefined, event)}
                         onPointerMove={movePaletteDrag}
                         onPointerUp={finishPaletteDrag}
                         onPointerCancel={finishPaletteDrag}
-                        className="flex aspect-square touch-none select-none items-center justify-center border border-white/40 bg-white/15 text-[28px] transition-transform hover:scale-105 hover:bg-white/25 active:cursor-grabbing"
+                        className="flex h-[58px] touch-none select-none items-center justify-center border border-white/40 bg-white/15 text-[24px] transition-transform hover:scale-105 hover:bg-white/25 active:cursor-grabbing"
                         aria-label={`Drag ${emoji} sticker onto the strip`}
                       >
                         {emoji}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="mt-2 grid w-full grid-cols-8 gap-2">
+                    {IMAGE_STICKERS.map(({ src, label }) => (
+                      <button
+                        key={src}
+                        type="button"
+                        onPointerDown={(event) => startPaletteDrag("", src, event)}
+                        onPointerMove={movePaletteDrag}
+                        onPointerUp={finishPaletteDrag}
+                        onPointerCancel={finishPaletteDrag}
+                        className="flex h-[58px] touch-none select-none items-center justify-center border border-white/40 bg-white/15 p-1.5 transition-transform hover:scale-105 hover:bg-white/25 active:cursor-grabbing"
+                        aria-label={`Drag ${label} sticker onto the strip`}
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={src} alt={label} draggable={false} className="pointer-events-none max-h-full max-w-full object-contain" />
                       </button>
                     ))}
                   </div>
@@ -1227,8 +1319,37 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
 
                 {/* STRIPS */}
                 <div className="col-span-2 flex flex-col items-start">
-                  <h3 className={heading}>Strips</h3>
-                  <div className="grid max-h-[240px] w-full grid-cols-6 gap-2.5 overflow-y-auto pr-1">
+                  <div className="mb-2 flex w-full items-center justify-between">
+                    <h3 className="text-[20px] font-black uppercase tracking-[1.5px] text-white [text-shadow:0_3px_8px_rgba(0,0,0,0.25)]">
+                      Strips
+                    </h3>
+                    {framePageCount > 1 && (
+                      <div className="flex items-center gap-2 text-[12px] font-black text-white">
+                        <button
+                          type="button"
+                          onClick={() => setFramePage((page) => Math.max(0, page - 1))}
+                          disabled={framePage === 0}
+                          className="rounded-full border border-white/70 bg-white/15 px-3 py-1.5 disabled:opacity-30"
+                          aria-label="Previous frame themes"
+                        >
+                          &larr;
+                        </button>
+                        <span>{framePage + 1} / {framePageCount}</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setFramePage((page) => Math.min(framePageCount - 1, page + 1))
+                          }
+                          disabled={framePage === framePageCount - 1}
+                          className="rounded-full border border-white/70 bg-white/15 px-3 py-1.5 disabled:opacity-30"
+                          aria-label="Next frame themes"
+                        >
+                          &rarr;
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="grid w-full grid-cols-6 gap-2.5 overflow-hidden">
                     <button
                       type="button"
                       onClick={() => setFrameKey(null)}
@@ -1247,7 +1368,7 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
                       </span>
                     </button>
 
-                    {availableFrames.map((f) => {
+                    {visibleFrames.map((f) => {
                       const active = activeFrame?.key === f.key;
                       return (
                         <button
@@ -1273,16 +1394,10 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
                       );
                     })}
                   </div>
-                  {activeFrame && (
-                    <p className="mt-2 text-[12px] italic text-white/70">
-                      Theme frames come with their own background — the frame colour is
-                      only used by the plain strip.
-                    </p>
-                  )}
                 </div>
               </div>
 
-              <div className="mt-2 flex w-full justify-end pr-4">
+              <div className="flex w-full justify-end pr-4">
                 <button
                   type="button"
                   onClick={goFinal}
