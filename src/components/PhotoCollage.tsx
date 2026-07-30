@@ -292,6 +292,7 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
   // that a newer run has taken over and stop appending photos.
   const captureRunRef = useRef(0);
   const decorCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const renderRafRef = useRef<number | null>(null);
   const brandImgRef = useRef<HTMLImageElement | null>(null);
   const stripQrImgRef = useRef<HTMLImageElement | null>(null);
   const dragRef = useRef<{ id: number; dx: number; dy: number } | null>(null);
@@ -551,8 +552,15 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
   const renderStrip = useCallback(() => {
     const canvas = decorCanvasRef.current;
     if (!canvas) return;
-    canvas.width = STRIP_W;
-    canvas.height = STRIP_H;
+    // Only (re)allocate the backing store when the size actually changes.
+    // renderStrip runs on every pointer move during a sticker drag/pinch;
+    // reassigning canvas.width each time forces a full buffer realloc+clear —
+    // pure churn, since the fills below already repaint the whole canvas — which
+    // hammers the kiosk GPU. STRIP_W/H are constant, so this allocates once.
+    if (canvas.width !== STRIP_W || canvas.height !== STRIP_H) {
+      canvas.width = STRIP_W;
+      canvas.height = STRIP_H;
+    }
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
@@ -668,8 +676,25 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bgColor, filter, stickers, brandReady, stripQrReady, activeFrame, frameImg, stickerImgsReady]);
 
+  // Coalesce decor redraws to one per animation frame. Sticker drag/pinch fires
+  // setStickers on every pointer move (up to the digitiser's 120-240 Hz); each
+  // change gives renderStrip a new identity and re-runs this effect. Redrawing
+  // the full strip — photo re-crops + GPU image blits — per event can overwhelm
+  // the kiosk renderer and crash the tab ("This page couldn't load"). rAF caps
+  // it to display rate and drops intermediate frames.
   useEffect(() => {
-    if (view === "decor") renderStrip();
+    if (view !== "decor") return;
+    if (renderRafRef.current != null) cancelAnimationFrame(renderRafRef.current);
+    renderRafRef.current = requestAnimationFrame(() => {
+      renderRafRef.current = null;
+      renderStrip();
+    });
+    return () => {
+      if (renderRafRef.current != null) {
+        cancelAnimationFrame(renderRafRef.current);
+        renderRafRef.current = null;
+      }
+    };
   }, [view, renderStrip]);
 
   // --- Sticker dragging on the canvas ---------------------------------------
@@ -799,6 +824,9 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
     const canvas = decorCanvasRef.current;
     if (!canvas) return;
 
+    // Draw once synchronously so the captured strip reflects the final sticker
+    // positions even if a coalesced (rAF) redraw was still pending.
+    renderStrip();
     const imageDataUrl = canvas.toDataURL("image/png");
     setStripDataUrl(imageDataUrl);
     stopCamera();
