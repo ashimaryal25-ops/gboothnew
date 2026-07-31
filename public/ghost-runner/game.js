@@ -808,7 +808,7 @@ function drawGameOver() {
   ctx.font = "32px Arial";
   ctx.fillText("Score: " + score, canvas.width / 2, canvas.height / 2 + 30);
   ctx.font = "24px Arial";
-  ctx.fillText("Press Space to Continue", canvas.width / 2, canvas.height / 2 + 80);
+  ctx.fillText("Tap to Continue", canvas.width / 2, canvas.height / 2 + 80);
   ctx.textAlign = "left";
 }
 
