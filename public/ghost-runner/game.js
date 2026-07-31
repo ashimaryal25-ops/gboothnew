@@ -47,7 +47,12 @@ let lvl2GraceTimer = 0;
 let showingInstructions = false;
 let instructionsLevel = 1;
 let instructionsTimer = 0;
-const INSTRUCTIONS_DURATION = 900; // 15 seconds at 60fps
+const INSTRUCTIONS_DURATION = 480; // 8 seconds at 60fps
+
+// "Skip" button shown on the instructions screen, top-left so it never
+// overlaps the camera HUD (which lives top-right). Lets repeat players
+// who already know the controls jump straight past the 8-second wait.
+const SKIP_BTN = { x: 30, y: 30, w: 150, h: 56 };
 
 const startMusic = new Audio("Assets/start_sound.wav");
 startMusic.loop = true;
@@ -354,8 +359,43 @@ document.addEventListener("keydown", function(e) {
     lvl2BgSound.play();
   }
 });
-canvas.addEventListener("touchstart", function() { reportActivity(); jump(); });
-canvas.addEventListener("mousedown", function() { reportActivity(); jump(); });
+// Converts a raw pointer event position into canvas-internal coordinates,
+// accounting for the canvas being displayed at a different size than its
+// internal resolution (it's scaled to fit the page via CSS).
+function getCanvasPos(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+}
+
+function pointInRect(px, py, r) {
+  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+}
+
+canvas.addEventListener("touchstart", function(e) {
+  reportActivity();
+  const touch = e.touches && e.touches[0];
+  if (touch && showingInstructions) {
+    const pos = getCanvasPos(touch.clientX, touch.clientY);
+    if (pointInRect(pos.x, pos.y, SKIP_BTN)) {
+      finishInstructions();
+      return;
+    }
+  }
+  jump();
+});
+canvas.addEventListener("mousedown", function(e) {
+  reportActivity();
+  if (showingInstructions) {
+    const pos = getCanvasPos(e.clientX, e.clientY);
+    if (pointInRect(pos.x, pos.y, SKIP_BTN)) {
+      finishInstructions();
+      return;
+    }
+  }
+  jump();
+});
 
 let handY = null;
 let handX = null;
@@ -775,6 +815,16 @@ function drawGameOver() {
 // Pre-level instruction screen. Shown automatically (no input needed) for
 // INSTRUCTIONS_DURATION frames before level 1 starts and again before level 2
 // starts, so anyone walking up to the kiosk can read how to play.
+function drawRoundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
 function drawInstructions() {
   ctx.fillStyle = "rgba(8,8,10,0.93)";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -901,6 +951,35 @@ function drawInstructions() {
   ctx.font = "bold 40px Arial";
   ctx.fillText("Starting in " + secondsLeft + "...", canvas.width / 2, y);
   ctx.textAlign = "left";
+
+  // Skip button - drawn last so it's always on top, same spot on both levels
+  ctx.fillStyle = "rgba(255,255,255,0.08)";
+  ctx.strokeStyle = "#39FF14";
+  ctx.lineWidth = 2;
+  drawRoundRect(SKIP_BTN.x, SKIP_BTN.y, SKIP_BTN.w, SKIP_BTN.h, 10);
+  ctx.fill();
+  ctx.stroke();
+
+  const iconCX = SKIP_BTN.x + 30;
+  const iconCY = SKIP_BTN.y + SKIP_BTN.h / 2;
+  ctx.fillStyle = "#39FF14";
+  ctx.beginPath();
+  ctx.moveTo(iconCX - 14, iconCY - 12);
+  ctx.lineTo(iconCX - 14, iconCY + 12);
+  ctx.lineTo(iconCX - 2, iconCY);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(iconCX - 2, iconCY - 12);
+  ctx.lineTo(iconCX - 2, iconCY + 12);
+  ctx.lineTo(iconCX + 10, iconCY);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "22px Arial";
+  ctx.textAlign = "left";
+  ctx.fillText("Skip", SKIP_BTN.x + 60, iconCY + 8);
 }
 
 function drawleaderBoard() {
@@ -1039,6 +1118,32 @@ function drawLvl2Background() {
   }
 }
 
+// Ends the instructions screen and starts whatever comes next (level 1
+// gameplay, or level 2 gameplay). Called both when the timer runs out and
+// when the player taps the skip button - same exact transition either way.
+function finishInstructions() {
+  showingInstructions = false;
+  if (instructionsLevel === 1) {
+    gameStarted = true;
+    score = 0;
+    obstacles = [];
+    spawnObstacle();
+    bgVideo.pause();
+    gameBgVideo.play();
+    startMusic.play().catch(function(e) {});
+  } else {
+    currentLevel = 2;
+    lvl2GraceTimer = 90;
+    handXHistory = [];
+    score20Sound.pause();
+    score20Sound.currentTime = 0;
+    lvl2BgSound.play();
+    lvl2BgVideo.play();
+    obstacles = [];
+    score = 0;
+  }
+}
+
 function gameLoop(timestamp) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   updateGifs(timestamp);
@@ -1046,26 +1151,7 @@ function gameLoop(timestamp) {
     drawInstructions();
     instructionsTimer--;
     if (instructionsTimer <= 0) {
-      showingInstructions = false;
-      if (instructionsLevel === 1) {
-        gameStarted = true;
-        score = 0;
-        obstacles = [];
-        spawnObstacle();
-        bgVideo.pause();
-        gameBgVideo.play();
-        startMusic.play().catch(function(e) {});
-      } else {
-        currentLevel = 2;
-        lvl2GraceTimer = 90;
-        handXHistory = [];
-        score20Sound.pause();
-        score20Sound.currentTime = 0;
-        lvl2BgSound.play();
-        lvl2BgVideo.play();
-        obstacles = [];
-        score = 0;
-      }
+      finishInstructions();
     }
   } else if (!gameStarted) {
     drawStartScreen();
