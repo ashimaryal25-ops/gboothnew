@@ -292,7 +292,15 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
   // that a newer run has taken over and stop appending photos.
   const captureRunRef = useRef(0);
   const decorCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  // Offscreen copy of everything under the stickers (background/frame art, the
+  // cropped photos, the branding). Repainting that is the expensive part, so it
+  // is done only when one of its inputs changes and then blitted on each frame.
+  const baseCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const renderRafRef = useRef<number | null>(null);
+  // Live sticker positions during a gesture. Dragging writes here instead of to
+  // React state (see onPointerMove), so `stickers` is the committed value.
+  const stickersRef = useRef<Sticker[]>([]);
+  const gestureDirtyRef = useRef(false);
   const brandImgRef = useRef<HTMLImageElement | null>(null);
   const stripQrImgRef = useRef<HTMLImageElement | null>(null);
   const dragRef = useRef<{ id: number; dx: number; dy: number } | null>(null);
@@ -549,17 +557,21 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
   }, [activeFrame]);
 
   // --- Strip rendering (direct port of renderPhotoStripCanvas) --------------
-  const renderStrip = useCallback(() => {
-    const canvas = decorCanvasRef.current;
-    if (!canvas) return;
-    // Only (re)allocate the backing store when the size actually changes.
-    // renderStrip runs on every pointer move during a sticker drag/pinch;
-    // reassigning canvas.width each time forces a full buffer realloc+clear —
-    // pure churn, since the fills below already repaint the whole canvas — which
-    // hammers the kiosk GPU. STRIP_W/H are constant, so this allocates once.
-    if (canvas.width !== STRIP_W || canvas.height !== STRIP_H) {
+  /**
+   * Paint everything BELOW the stickers into the offscreen base canvas.
+   *
+   * This is the heavy pass: up to four photos re-cropped through a canvas
+   * filter, plus (on a custom frame) a 1200x1800 PNG downscaled to 600x1800 and
+   * four edge-bleed blits. It used to re-run for every sticker move; splitting
+   * it out keeps a drag/pinch to the cheap `composite` below.
+   */
+  const renderBase = useCallback(() => {
+    let canvas = baseCanvasRef.current;
+    if (!canvas) {
+      canvas = document.createElement("canvas");
       canvas.width = STRIP_W;
       canvas.height = STRIP_H;
+      baseCanvasRef.current = canvas;
     }
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -593,7 +605,6 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
         );
       });
       ctx.drawImage(frameImg, 0, 0, STRIP_W, STRIP_H);
-      drawStickers(ctx, stickers, stickerImgsRef.current);
       return;
     }
 
@@ -669,33 +680,78 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
       ctx.drawImage(stripQrImg, qrX, qrY, qrSize, qrSize);
     }
 
-    drawStickers(ctx, stickers, stickerImgsRef.current);
-    // stickerImgsReady is intentional: it isn't read here (drawStickers reads the
-    // ref) but forces a repaint once the PNG stickers finish preloading, so any
-    // already-placed image sticker appears without waiting for the next interaction.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bgColor, filter, stickers, brandReady, stripQrReady, activeFrame, frameImg, stickerImgsReady]);
+  }, [bgColor, filter, brandReady, stripQrReady, activeFrame, frameImg]);
 
-  // Coalesce decor redraws to one per animation frame. Sticker drag/pinch fires
-  // setStickers on every pointer move (up to the digitiser's 120-240 Hz); each
-  // change gives renderStrip a new identity and re-runs this effect. Redrawing
-  // the full strip — photo re-crops + GPU image blits — per event can overwhelm
-  // the kiosk renderer and crash the tab ("This page couldn't load"). rAF caps
-  // it to display rate and drops intermediate frames.
-  useEffect(() => {
-    if (view !== "decor") return;
-    if (renderRafRef.current != null) cancelAnimationFrame(renderRafRef.current);
+  /**
+   * Blit the prepared base onto the visible canvas and stamp the stickers on
+   * top. This is all a drag/pinch costs: one full-canvas copy plus a handful of
+   * small sticker blits, with no photo re-cropping, no filter passes and no
+   * frame rescale.
+   */
+  const composite = useCallback(() => {
+    const canvas = decorCanvasRef.current;
+    const base = baseCanvasRef.current;
+    if (!canvas || !base) return;
+    // Assigning width/height reallocates and clears the backing store, so only
+    // do it when the size actually differs. STRIP_W/H are constant: once.
+    if (canvas.width !== STRIP_W || canvas.height !== STRIP_H) {
+      canvas.width = STRIP_W;
+      canvas.height = STRIP_H;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(base, 0, 0);
+    drawStickers(ctx, stickersRef.current, stickerImgsRef.current);
+  }, []);
+
+  /** Full repaint: rebuild the base, then composite. */
+  const renderStrip = useCallback(() => {
+    renderBase();
+    composite();
+  }, [renderBase, composite]);
+
+  /**
+   * Coalesce gesture repaints to one per animation frame, so a 120-240 Hz
+   * digitiser cannot queue more canvas work than the display can retire.
+   */
+  const scheduleComposite = useCallback(() => {
+    if (renderRafRef.current != null) return;
     renderRafRef.current = requestAnimationFrame(() => {
       renderRafRef.current = null;
-      renderStrip();
+      composite();
     });
+  }, [composite]);
+
+  // Rebuild the base whenever one of its inputs changes. Deliberately NOT
+  // dependent on `stickers`: moving a sticker must never trigger this pass.
+  useEffect(() => {
+    if (view !== "decor") return;
+    renderStrip();
+  }, [view, renderStrip]);
+
+  // Keyed on `stickers` alone: a gesture never calls setStickers until it ends,
+  // so this can't clobber the live list mid-drag.
+  useEffect(() => {
+    stickersRef.current = stickers;
+  }, [stickers]);
+
+  // Cheap repaint when the committed sticker list changes (added, cleared, or a
+  // gesture ended) or when the PNG stickers finish preloading. Called directly
+  // rather than via rAF so the strip still paints on a backgrounded tab.
+  useEffect(() => {
+    if (view !== "decor") return;
+    composite();
+  }, [view, stickers, stickerImgsReady, composite]);
+
+  // Drop any queued gesture frame when leaving Decorate.
+  useEffect(() => {
     return () => {
       if (renderRafRef.current != null) {
         cancelAnimationFrame(renderRafRef.current);
         renderRafRef.current = null;
       }
     };
-  }, [view, renderStrip]);
+  }, [view]);
 
   // --- Sticker dragging on the canvas ---------------------------------------
   const canvasCoords = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -706,57 +762,116 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
     };
   };
 
+  /** Capture is best-effort: a pointer can already be gone (or synthetic). */
+  const capturePointer = (el: HTMLElement, pointerId: number) => {
+    try {
+      el.setPointerCapture(pointerId);
+    } catch {}
+  };
+
+  const releasePointer = (el: HTMLElement, pointerId: number) => {
+    try {
+      if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId);
+    } catch {}
+  };
+
+  /** Apply a gesture edit to the live list and queue one repaint. */
+  const updateActiveSticker = (id: number, patch: Partial<Sticker>) => {
+    stickersRef.current = stickersRef.current.map((s) =>
+      s.id === id ? { ...s, ...patch } : s,
+    );
+    gestureDirtyRef.current = true;
+    scheduleComposite();
+  };
+
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const p = canvasCoords(e);
     activePointersRef.current.set(e.pointerId, p);
+    const live = stickersRef.current;
 
     if (activePointersRef.current.size === 1) {
-      for (let i = stickers.length - 1; i >= 0; i--) {
-        const s = stickers[i];
+      for (let i = live.length - 1; i >= 0; i--) {
+        const s = live[i];
         if (Math.hypot(p.x - s.x, p.y - s.y) < s.size / 1.2) {
           dragRef.current = { id: s.id, dx: p.x - s.x, dy: p.y - s.y };
-          e.currentTarget.setPointerCapture(e.pointerId);
+          capturePointer(e.currentTarget, e.pointerId);
           break;
         }
       }
     } else if (activePointersRef.current.size === 2 && dragRef.current) {
       const pts = Array.from(activePointersRef.current.values());
       const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-      const activeSticker = stickers.find((s) => s.id === dragRef.current!.id);
-      if (activeSticker) {
+      const activeSticker = live.find((s) => s.id === dragRef.current!.id);
+      // A zero start distance would scale by Infinity/NaN on the first move.
+      if (activeSticker && dist > 0) {
         pinchRef.current = { id: activeSticker.id, startDist: dist, startSize: activeSticker.size };
+        // Capture the second finger too, so sliding it past the canvas edge
+        // mid-pinch doesn't fire pointerout and silently cancel the zoom.
+        capturePointer(e.currentTarget, e.pointerId);
       }
     }
   };
 
+  // Sticker moves are written to `stickersRef` and repainted directly, NOT
+  // pushed through setStickers; the committed list is updated once, on pointer up.
+  //
+  // This is what took the booth down on zoom. The pinch branch used to queue
+  //
+  //   setStickers(prev => prev.map(s => s.id === pinchRef.current!.id ? ... ))
+  //
+  // once per pointer sample. React does not run that updater when it is queued —
+  // it replays it during the next render. Lifting a finger sets pinchRef.current
+  // to null first, so the last queued updater dereferenced null *inside render*:
+  // "TypeError: Cannot read properties of null (reading 'id')". An error thrown
+  // in render escapes to Next's global error boundary and replaces the whole app
+  // with its "This page couldn't load" screen — which is the crash page guests
+  // were seeing, not a browser/GPU crash.
+  //
+  // A ref holds the live value at the moment it is read, so there is no stale
+  // dereference to make. Dragging never hit this because pointer up nulls
+  // dragRef only after the queue has drained on a one-finger gesture.
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const p = canvasCoords(e);
     if (activePointersRef.current.has(e.pointerId)) {
       activePointersRef.current.set(e.pointerId, p);
     }
 
-    if (activePointersRef.current.size === 2 && pinchRef.current) {
+    if (activePointersRef.current.size >= 2 && pinchRef.current) {
       const pts = Array.from(activePointersRef.current.values());
       const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-      const newSize = Math.max(20, Math.min(600, pinchRef.current.startSize * (dist / pinchRef.current.startDist)));
-      setStickers((prev) =>
-        prev.map((s) => (s.id === pinchRef.current!.id ? { ...s, size: newSize } : s)),
+      const newSize = Math.max(
+        20,
+        Math.min(600, pinchRef.current.startSize * (dist / pinchRef.current.startDist)),
       );
+      if (Number.isFinite(newSize)) {
+        updateActiveSticker(pinchRef.current.id, { size: newSize });
+      }
     } else if (activePointersRef.current.size === 1 && dragRef.current) {
-      setStickers((prev) =>
-        prev.map((s) => (s.id === dragRef.current!.id ? { ...s, x: p.x - dragRef.current!.dx, y: p.y - dragRef.current!.dy } : s)),
-      );
+      updateActiveSticker(dragRef.current.id, {
+        x: p.x - dragRef.current.dx,
+        y: p.y - dragRef.current.dy,
+      });
     }
   };
 
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     activePointersRef.current.delete(e.pointerId);
+    // Guarded release: only the finger that grabbed the sticker was captured, so
+    // the old unconditional releasePointerCapture threw NotFoundError when the
+    // *second* finger of a pinch was the last one lifted — a second route to the
+    // same crash screen.
+    releasePointer(e.currentTarget, e.pointerId);
     if (activePointersRef.current.size < 2) {
       pinchRef.current = null;
     }
-    if (activePointersRef.current.size === 0 && dragRef.current) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
+    if (activePointersRef.current.size === 0) {
       dragRef.current = null;
+      // Publish the gesture result once it is over, so print/export and the rest
+      // of the UI see the final position and size.
+      if (gestureDirtyRef.current) {
+        gestureDirtyRef.current = false;
+        setStickers(stickersRef.current);
+      }
     }
   };
 
@@ -826,6 +941,14 @@ export function PhotoCollage({ onExit, onActivity }: PhotoCollageProps) {
 
     // Draw once synchronously so the captured strip reflects the final sticker
     // positions even if a coalesced (rAF) redraw was still pending.
+    if (renderRafRef.current != null) {
+      cancelAnimationFrame(renderRafRef.current);
+      renderRafRef.current = null;
+    }
+    if (gestureDirtyRef.current) {
+      gestureDirtyRef.current = false;
+      setStickers(stickersRef.current);
+    }
     renderStrip();
     const imageDataUrl = canvas.toDataURL("image/png");
     setStripDataUrl(imageDataUrl);
