@@ -390,9 +390,13 @@ select:focus-visible {
   display: grid;
   place-items: center;
   overflow: hidden;
-  padding: 2px;
   border: 0;
-  border-radius: 4px;
+  /* The logo art is a blue disc inscribed edge-to-edge with the "ICL" letters
+     knocked out, so it needs something white behind it or the card gradient
+     shows through the letters. A circular backing the same size as the art sits
+     entirely under the disc — the letters still read white, but there is no
+     white plate framing the logo. */
+  border-radius: 50%;
   background: white;
 }
 

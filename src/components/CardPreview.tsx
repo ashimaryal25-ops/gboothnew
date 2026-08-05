@@ -91,7 +91,7 @@ export function CardPreview({ card, photo }: CardPreviewProps) {
 
       <div className="gold-card__qr">
         <img
-          src="/cardify/icl-logo.png"
+          src="/stickers/icl-logo-sticker.png"
           alt="Innovation and Creativity Lab"
         />
       </div>
